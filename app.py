@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO, emit
 import os
 from flask import send_from_directory
@@ -10,8 +10,10 @@ app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Global video timestamps
-timestamps = {}  # { 'video.mp4': current_time_in_seconds }
-current_video = {'name': None}  # Active video selected by host
+# Global video timestamps + play state
+timestamps = {}  # { 'video.mp4': {'time': float, 'isPlaying': bool} }
+current_video = {'name': None}
+
 
 VIDEO_DIR = 'videos'  # Folder containing videos
 
@@ -29,8 +31,9 @@ def list_videos():
     files = [f for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')]
     for f in files:
         if f not in timestamps:
-            timestamps[f] = 0  # Initialize if not present
+            timestamps[f] = {'time': 0, 'isPlaying': False}
     return jsonify(files)
+
 
 @socketio.on('connect')
 def on_connect():
@@ -42,16 +45,17 @@ def on_connect():
 
 @socketio.on('host_update')
 def on_host_update(data):
-    # Data should contain 'video' and 'timestamp'
     video = data.get('video')
     timestamp = data.get('timestamp')
+    isPlaying = data.get('isPlaying', False)
     if video in timestamps:
-        timestamps[video] = timestamp
+        timestamps[video] = {'time': timestamp, 'isPlaying': isPlaying}
         current_video['name'] = video
         emit('sync', {
             'current_video': video,
             'timestamps': timestamps
         }, broadcast=True)
+
 
 if __name__ == '__main__':
     if not os.path.exists(VIDEO_DIR):
