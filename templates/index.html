@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Video Sync</title>
+</head>
+<body>
+    <h1>Video Sync</h1>
+    <video id="videoPlayer" width="640" controls></video>
+    <br>
+    <button id="becomeHost">Become Host</button>
+    <br><br>
+    <select id="videoSelector"></select>
+
+    <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+    <script>
+        const socket = io(window.location.origin);
+        const video = document.getElementById('videoPlayer');
+        const videoSelector = document.getElementById('videoSelector');
+        const becomeHostBtn = document.getElementById('becomeHost');
+        let isHost = false;
+        let currentVideo = null;
+
+        async function loadVideos() {
+            const res = await fetch('/videos');
+            const videos = await res.json();
+            videoSelector.innerHTML = videos.map(v => `<option value="${v}">${v}</option>`).join('');
+            if (videos.length > 0) {
+                loadVideo(videos[0]);
+            }
+        }
+
+        function loadVideo(file) {
+            video.src = `/videos/${file}`;
+            video.load();
+            currentVideo = file;
+        }
+
+        socket.on('sync', (data) => {
+            console.log('Sync received', data);
+            if (!isHost) {
+                if (data.current_video && currentVideo !== data.current_video) {
+                    loadVideo(data.current_video);
+                }
+                const newTime = data.timestamps[data.current_video];
+                if (Math.abs(video.currentTime - newTime) > 2) {
+                    video.currentTime = newTime;
+                }
+                if (video.paused) {
+                    video.play();
+                }
+            }
+        });
+
+        becomeHostBtn.onclick = () => {
+            isHost = true;
+            console.log('You are now the host.');
+            setInterval(() => {
+                socket.emit('host_update', {
+                    video: currentVideo,
+                    timestamp: video.currentTime
+                });
+            }, 1000);
+        };
+
+        videoSelector.addEventListener('change', () => {
+            const selected = videoSelector.value;
+            loadVideo(selected);
+            if (isHost) {
+                setTimeout(() => {
+                    socket.emit('host_update', {
+                        video: selected,
+                        timestamp: video.currentTime
+                    });
+                }, 500);
+            }
+        });
+
+        loadVideos();
+    </script>
+</body>
+</html>
