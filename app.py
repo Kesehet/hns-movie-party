@@ -1,9 +1,10 @@
 from flask import Flask, render_template, jsonify, send_from_directory, request, Response, abort
 from flask_socketio import SocketIO, emit
 import os
-import re
 import datetime
 import subprocess
+from werkzeug.utils import secure_filename
+
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
@@ -13,7 +14,7 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 timestamps = {}  # { 'video.m3u8': {'time': float, 'isPlaying': bool} }
 current_video = {'name': None}
 
-VIDEO_DIR = 'D:/TeraBoxDownload'  # Folder containing HLS videos (m3u8 + ts)
+VIDEO_DIR = 'videos'  # Folder containing HLS videos (m3u8 + ts)
 
 @app.route('/')
 def index():
@@ -128,7 +129,40 @@ def on_host_update(data):
             'timestamps': timestamps
         }, broadcast=True)
 
+
+
+
+
+
+ALLOWED_EXTENSIONS = {'ts', 'm3u8'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.route('/upload', methods=['GET', 'POST'])
+def upload_files():
+    if request.method == 'POST':
+        if 'files[]' not in request.files:
+            return "No files part", 400
+
+        files = request.files.getlist('files[]')
+        if not files:
+            return "No selected files", 400
+
+        saved_files = []
+        for file in files:
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                save_path = os.path.join(VIDEO_DIR, filename)
+                file.save(save_path)
+                saved_files.append(filename)
+
+        return f"Uploaded: {', '.join(saved_files)}", 200
+
+    # GET method - render upload form
+    return render_template('upload.html')
+
 if __name__ == '__main__':
     if not os.path.exists(VIDEO_DIR):
         os.makedirs(VIDEO_DIR)
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000)
