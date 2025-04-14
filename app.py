@@ -1,21 +1,19 @@
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, send_from_directory, request, Response, abort
 from flask_socketio import SocketIO, emit
 import os
-from flask import send_from_directory
-
-
+import re
+import datetime
+import subprocess
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Global video timestamps
 # Global video timestamps + play state
-timestamps = {}  # { 'video.mp4': {'time': float, 'isPlaying': bool} }
+timestamps = {}  # { 'video.m3u8': {'time': float, 'isPlaying': bool} }
 current_video = {'name': None}
 
-
-VIDEO_DIR = 'videos'  # Folder containing videos
+VIDEO_DIR = 'D:/TeraBoxDownload'  # Folder containing HLS videos (m3u8 + ts)
 
 @app.route('/')
 def index():
@@ -23,16 +21,90 @@ def index():
 
 @app.route('/videos/<path:filename>')
 def serve_video(filename):
-    return send_from_directory(VIDEO_DIR, filename)
+    file_path = os.path.join(VIDEO_DIR, filename)
+
+    if not os.path.isfile(file_path):
+        abort(404)
+
+    # Dynamically set MIME type
+    if filename.endswith('.m3u8'):
+        content_type = 'application/vnd.apple.mpegurl'
+    elif filename.endswith('.ts'):
+        content_type = 'video/MP2T'
+    else:
+        content_type = 'application/octet-stream'  # fallback
+
+    with open(file_path, 'rb') as f:
+        data = f.read()
+
+    response = Response(data,
+                        200,
+                        mimetype=content_type,
+                        direct_passthrough=True)
+    file_size = os.path.getsize(file_path)
+    response.headers.add('Content-Length', str(file_size))
+
+    # Caching Headers
+    expires = datetime.datetime.utcnow() + datetime.timedelta(days=365)
+    response.headers['Cache-Control'] = 'public, max-age=31536000'
+    response.headers['Expires'] = expires.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    return response
+
+
+def convert_mp4_to_hls(mp4_path, output_dir):
+    basename = os.path.splitext(os.path.basename(mp4_path))[0]
+    output_m3u8 = os.path.join(output_dir, f"{basename}.m3u8")
+    output_ts_pattern = os.path.join(output_dir, f"{basename}_%03d.ts")
+
+    # Skip if already exists
+    if os.path.exists(output_m3u8):
+        return
+
+    # Corrected FFmpeg command
+    cmd = [
+        'ffmpeg',
+        '-i', mp4_path,
+        '-c:v', 'copy',    # Correct codec syntax
+        '-c:a', 'copy',    # Copy audio too
+        '-start_number', '0',
+        '-hls_time', '10',
+        '-hls_list_size', '0',
+        '-hls_segment_filename', output_ts_pattern,
+        '-f', 'hls',
+        output_m3u8
+    ]
+
+    try:
+        subprocess.run(cmd, check=True)
+        print(f"Converted {mp4_path} to HLS successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error converting {mp4_path} to HLS: {e.stderr}")
 
 
 @app.route('/videos')
 def list_videos():
-    files = [f for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')]
+    # Check if ffmpeg is available
+    try:
+        subprocess.run(['ffmpeg', '-version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ffmpeg_available = True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        ffmpeg_available = False
+
+    # Convert .mp4 to HLS if needed
+    if ffmpeg_available:
+        mp4_files = [f for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')]
+        for mp4 in mp4_files:
+            mp4_path = os.path.join(VIDEO_DIR, mp4)
+            convert_mp4_to_hls(mp4_path, VIDEO_DIR)
+
+    # List .m3u8 files
+    files = [f for f in os.listdir(VIDEO_DIR) if f.endswith('.m3u8')]
     for f in files:
         if f not in timestamps:
             timestamps[f] = {'time': 0, 'isPlaying': False}
     return jsonify(files)
+
 
 
 @socketio.on('connect')
@@ -55,7 +127,6 @@ def on_host_update(data):
             'current_video': video,
             'timestamps': timestamps
         }, broadcast=True)
-
 
 if __name__ == '__main__':
     if not os.path.exists(VIDEO_DIR):

@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HNS - Party</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://vjs.zencdn.net/8.5.2/video-js.css" rel="stylesheet" />
+    <script src="https://vjs.zencdn.net/8.5.2/video.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script> <!-- Add HLS.js -->
+
     <style>
         body {
             background: black;
@@ -24,60 +28,46 @@
         }
 
         @media (max-width: 768px) {
-            h1 {
-                font-size: 1.5rem;
-            }
-
-            #becomeHost {
-                font-size: 0.9rem;
-                padding: 0.5rem 1rem;
-            }
-
-            #videoSelector {
-                font-size: 0.9rem;
-            }
-
-            #hostBanner {
-                font-size: 0.9rem;
-            }
+            h1 { font-size: 1.5rem; }
+            #becomeHost, #videoSelector, #hostBanner { font-size: 0.9rem; }
+            #becomeHost { padding: 0.5rem 1rem; }
         }
 
         @media (max-width: 576px) {
-            h1 {
-                font-size: 1.2rem;
-            }
-
-            #becomeHost {
-                font-size: 0.8rem;
-                padding: 0.4rem 0.8rem;
-            }
-
-            #videoSelector {
-                font-size: 0.8rem;
-            }
-
-            #hostBanner {
-                font-size: 0.8rem;
-            }
+            h1 { font-size: 1.2rem; }
+            #becomeHost, #videoSelector, #hostBanner { font-size: 0.8rem; }
+            #becomeHost { padding: 0.4rem 0.8rem; }
         }
     </style>
 </head>
 <body class="d-flex flex-column align-items-center justify-content-center">
     <div id="hostBanner" class="alert alert-danger text-center w-100 position-fixed top-0">You are the host!</div>
     <h1 class="mb-4 text-center">HNS - Party</h1>
-    <video id="videoPlayer" width="640" controls class="mb-4"></video>
+    <video
+        id="videoPlayer"
+        class="video-js vjs-default-skin mb-4"
+        controls
+        preload="auto"
+        width="640"
+        height="360"
+        data-setup="{}">
+    </video>
+
     <button id="becomeHost" class="btn btn-primary mb-4">Become Host</button>
     <select id="videoSelector" class="form-select w-auto"></select>
 
     <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+
+    
     <script>
         const socket = io(window.location.origin);
-        const video = document.getElementById('videoPlayer');
+        const player = videojs('videoPlayer');
         const videoSelector = document.getElementById('videoSelector');
         const becomeHostBtn = document.getElementById('becomeHost');
         const hostBanner = document.getElementById('hostBanner');
         let isHost = false;
         let currentVideo = null;
+        let hls; // HLS.js instance
 
         async function loadVideos() {
             const res = await fetch('/videos');
@@ -89,43 +79,77 @@
         }
 
         function loadVideo(file) {
-            video.src = `/videos/${file}`;
-            video.load();
+            const video = document.getElementById('videoPlayer_html5_api');
+
+            if (hls) {
+                hls.destroy();
+                hls = null;
+            }
+
+            if (Hls.isSupported()) {
+                hls = new Hls();
+                hls.loadSource(`/videos/${file}`);
+                hls.attachMedia(video);
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari native support
+                video.src = `/videos/${file}`;
+            } else {
+                console.error('HLS not supported');
+            }
+
             currentVideo = file;
         }
 
         socket.on('sync', (data) => {
-            console.log('Sync received', data);
-            if (!isHost) {
-                if (data.current_video && currentVideo !== data.current_video) {
-                    loadVideo(data.current_video);
-                }
-                const info = data.timestamps[data.current_video];
-                if (info) {
-                    const newTime = info.time;
-                    const shouldBePlaying = info.isPlaying;
-                    
-                    if (Math.abs(video.currentTime - newTime) > 2) {
-                        video.currentTime = newTime;
-                    }
-                    if (shouldBePlaying && video.paused) {
-                        video.play();
-                    } else if (!shouldBePlaying && !video.paused) {
-                        video.pause();
-                    }
-                }
+    if (!isHost) {
+        if (data.current_video && currentVideo !== data.current_video) {
+            loadVideo(data.current_video);
+        }
+
+        const info = data.timestamps[data.current_video];
+        if (info) {
+            const hostTime = info.time;
+            const shouldBePlaying = info.isPlaying;
+            const myTime = player.currentTime();
+            const timeDiff = myTime - hostTime;
+
+            if (Math.abs(timeDiff) > 2) {
+                player.currentTime(hostTime); // Seek to correct time
+            }
+
+            if (shouldBePlaying) {
+                player.play();
+            } else {
+                player.pause();
+            }
+            player.playbackRate(1);
+        }
+    }
+});
+
+        videoSelector.addEventListener('change', () => {
+            const selected = videoSelector.value;
+            loadVideo(selected);
+            if (isHost) {
+                setTimeout(() => {
+                    socket.emit('host_update', {
+                        video: selected,
+                        timestamp: player.currentTime(),
+                        isPlaying: !player.paused()  // <-- FIXED
+                    });
+                }, 500);
             }
         });
+
 
         becomeHostBtn.onclick = () => {
             isHost = true;
             hostBanner.style.display = 'block';
-            console.log('You are now the host.');
             setInterval(() => {
                 socket.emit('host_update', {
                     video: currentVideo,
-                    timestamp: video.currentTime,
-                    isPlaying: !video.paused
+                    timestamp: player.currentTime(),
+                    isPlaying: !player.paused()
                 });
             }, 1000);
         };
@@ -137,9 +161,11 @@
                 setTimeout(() => {
                     socket.emit('host_update', {
                         video: selected,
-                        timestamp: video.currentTime
+                        timestamp: player.currentTime(),
+                        isPlaying: !player.paused()
                     });
                 }, 500);
+
             }
         });
 
